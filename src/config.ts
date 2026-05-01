@@ -142,6 +142,15 @@ export interface SlackConfig {
   allowBotIds: string[];  // Optional: Slack app/bot IDs (B...) that may post; empty = any bot in allowBots channel
 }
 
+export interface WhatsAppConfig {
+  /** JIDs to accept messages from, e.g. "15551234567@s.whatsapp.net". Empty = accept all. */
+  allowedJids: string[];
+  /** Directory for Baileys auth state (Signal keys + creds). */
+  authDir: string;
+  /** Whether to respond to group messages (default: false). */
+  listenGroups?: boolean;
+}
+
 export type SecurityLevel =
   | "locked"
   | "strict"
@@ -176,6 +185,7 @@ export interface Settings {
   telegram: TelegramConfig;
   discord: DiscordConfig;
   slack: SlackConfig;
+  whatsapp?: WhatsAppConfig;
   security: SecurityConfig;
   web: WebConfig;
   stt: SttConfig;
