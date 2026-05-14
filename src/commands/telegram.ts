@@ -955,7 +955,7 @@ async function handleMessage(message: TelegramMessage): Promise<void> {
       `Security: ${settings.security.level}`,
       `Created: ${session.createdAt}`,
       `Last used: ${session.lastUsedAt}`,
-      `Compact warned: ${(session as any).compactWarned ? "yes" : "no"}`,
+      `Compact warned: ${session.compactWarned ? "yes" : "no"}`,
     ];
     await sendMessage(config.token, chatId, lines.join("\n"), threadId);
     return;

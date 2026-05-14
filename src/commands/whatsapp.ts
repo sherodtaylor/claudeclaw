@@ -2,8 +2,8 @@ import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMes
 import type { WASocket, WAMessage, proto } from "baileys";
 import type { Boom } from "@hapi/boom";
 import { getSettings, loadSettings } from "../config";
-import { runUserMessage, ensureProjectClaudeMd, compactCurrentSession } from "../runner";
-import { resetSession, peekSession } from "../sessions";
+import { runUserMessage, ensureProjectClaudeMd, compactCurrentThreadSession } from "../runner";
+import { removeThreadSession, peekThreadSession } from "../sessionManager";
 import { transcribeAudioToText } from "../whisper";
 import { resolveSkillPrompt } from "../skills";
 import { mkdir } from "node:fs/promises";
@@ -179,6 +179,8 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 
   const label = jidToPhone(participantJid || senderJid);
   const replyJid = senderJid; // always reply to the chat, not the participant
+  // Session key: per-participant even in groups, so each person has isolated context
+  const sessionKey = participantJid || senderJid;
 
   // Typing indicator
   await sock.sendPresenceUpdate("composing", replyJid).catch(() => {});
@@ -192,7 +194,7 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
   }
 
   if (command === "/reset") {
-    await resetSession();
+    await removeThreadSession(sessionKey);
     await sock.sendMessage(replyJid, { text: "Session reset. Next message starts fresh." });
     await sock.sendPresenceUpdate("available", replyJid).catch(() => {});
     return;
@@ -200,14 +202,14 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 
   if (command === "/compact") {
     await sock.sendMessage(replyJid, { text: "⏳ Compacting session..." });
-    const result = await compactCurrentSession();
+    const result = await compactCurrentThreadSession(sessionKey);
     await sock.sendMessage(replyJid, { text: result.message });
     await sock.sendPresenceUpdate("available", replyJid).catch(() => {});
     return;
   }
 
   if (command === "/status") {
-    const session = await peekSession();
+    const session = await peekThreadSession(sessionKey);
     if (!session) {
       await sock.sendMessage(replyJid, { text: "No active session." });
     } else {
@@ -311,7 +313,7 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
     }
 
     const prefixedPrompt = promptParts.join("\n");
-    const result = await runUserMessage("whatsapp", prefixedPrompt);
+    const result = await runUserMessage("whatsapp", prefixedPrompt, sessionKey);
 
     if (result.exitCode !== 0) {
       await sock.sendMessage(replyJid, { text: `Error (exit ${result.exitCode}): ${result.stderr || "Unknown error"}` });
