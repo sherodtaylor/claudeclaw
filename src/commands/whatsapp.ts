@@ -1,4 +1,4 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from "baileys";
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, jidNormalizedUser, isLidUser, isJidGroup } from "baileys";
 import type { WASocket, WAMessage, proto } from "baileys";
 import type { Boom } from "@hapi/boom";
 import { getSettings, loadSettings } from "../config";
@@ -81,12 +81,25 @@ function extractCommand(text: string): string | null {
   return first.startsWith("/") ? first.toLowerCase() : null;
 }
 
+// LID→phone-JID map built from contacts.update events.
+// WhatsApp sends the same user as either @s.whatsapp.net or @lid depending on context.
+// Without canonicalization, one person gets two Claude sessions — breaking multitenancy.
+const lidToPhoneJid = new Map<string, string>();
+
+function canonicalJid(jid: string): string {
+  const normalized = jidNormalizedUser(jid);
+  if (isLidUser(normalized)) {
+    return lidToPhoneJid.get(normalized) ?? normalized;
+  }
+  return normalized;
+}
+
 function jidToPhone(jid: string): string {
-  return jid.split("@")[0];
+  return canonicalJid(jid).split("@")[0];
 }
 
 function isGroupJid(jid: string): boolean {
-  return jid.endsWith("@g.us");
+  return isJidGroup(jid) ?? false;
 }
 
 const SILENT_LOGGER = {
@@ -143,10 +156,10 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
   const participantJid = inGroup ? (key.participant ?? "") : senderJid;
   const allowedJids = whatsapp.allowedJids ?? [];
 
-  // If allowedJids is non-empty, enforce it
+  // If allowedJids is non-empty, enforce it — compare via canonical phone number
   if (allowedJids.length > 0) {
     const senderPhone = jidToPhone(participantJid || senderJid);
-    const allowed = allowedJids.some(j => jidToPhone(j) === senderPhone || j === senderJid || j === participantJid);
+    const allowed = allowedJids.some(j => jidToPhone(j) === senderPhone);
     if (!allowed) {
       console.log(`[WhatsApp] Ignored message from unauthorized JID: ${participantJid || senderJid}`);
       return;
@@ -179,8 +192,8 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 
   const label = jidToPhone(participantJid || senderJid);
   const replyJid = senderJid; // always reply to the chat, not the participant
-  // Session key: per-participant even in groups, so each person has isolated context
-  const sessionKey = participantJid || senderJid;
+  // Canonical JID resolves LIDs to phone JIDs so the same person always maps to one session
+  const sessionKey = `wa:${canonicalJid(participantJid || senderJid)}`;
 
   // Typing indicator
   await sock.sendPresenceUpdate("composing", replyJid).catch(() => {});
@@ -383,6 +396,15 @@ async function connect(authDir: string): Promise<void> {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    // Build LID→phone-JID mapping so canonicalJid() can resolve @lid participants
+    sock.ev.on("contacts.update", (updates) => {
+      for (const contact of updates) {
+        if (contact.lid && contact.phoneNumber) {
+          lidToPhoneJid.set(jidNormalizedUser(contact.lid), jidNormalizedUser(contact.phoneNumber));
+        }
+      }
+    });
 
     await new Promise<void>((resolve) => {
       sock.ev.on("connection.update", async (update) => {
